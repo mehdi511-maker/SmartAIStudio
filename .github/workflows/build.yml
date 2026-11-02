@@ -43,6 +43,10 @@ jobs:
           flutter create --platforms=android \
             --org ir.smartai \
             --project-name smart_ai_studio .
+            
+      - name: Remove default Flutter test
+        run: rm -f test/widget_test.dart
+
 
       - name: Get dependencies
         run: flutter pub get
