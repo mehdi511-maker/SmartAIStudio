@@ -15,47 +15,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. دریافت مخزن
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. استخراج سورس اصلی
       - name: Extract project ZIP
         run: |
           unzip -o SmartAIStudio_GitHub.zip -d .
           test -f pubspec.yaml
           test -f lib/main.dart
 
-      # 3. نصب Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 4. نصب Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # 5. ایجاد پروژه Android جدید
       - name: Generate Android platform
         run: |
           flutter create --platforms=android \
             --org ir.smartai \
             --project-name smart_ai_studio .
 
-      # 6. حذف تست پیش‌فرض
       - name: Remove default test
-        run: rm -f test/widget_test.dart
+        run: |
+          rm -f test/widget_test.dart
 
-      # 7. دریافت وابستگی‌ها
       - name: Get dependencies
         run: flutter pub get
 
-      # 8. تنظیم صحیح compileSdk برای هر دو قالب Gradle
       - name: Configure Android SDK 36
         run: |
           python3 - <<'PY'
@@ -69,13 +62,12 @@ jobs:
                   return False
 
               content = path.read_text()
-              indent = "    "
 
               if path.name.endswith(".gradle.kts"):
-                  pattern = r'(?m)^(\s*)compileSdk\s*(?:=.*)?$'
+                  pattern = r'(?m)^(\s*)compileSdk\b.*$'
                   replacement = r'\g<1>compileSdk = 36'
               else:
-                  pattern = r'(?m)^(\s*)compileSdk(?:Version)?\s*(?:=.*)?$'
+                  pattern = r'(?m)^(\s*)compileSdk(?:Version)?\b.*$'
                   replacement = r'\g<1>compileSdkVersion 36'
 
               updated, count = re.subn(
@@ -93,7 +85,7 @@ jobs:
               print(f"Updated: {path}")
               return True
 
-          # برنامه اصلی
+          # Configure Android application
           app_files = [
               Path("android/app/build.gradle.kts"),
               Path("android/app/build.gradle")
@@ -110,7 +102,7 @@ jobs:
           if not app_found:
               raise RuntimeError("Android app Gradle file not found")
 
-          # افزونه‌های وابسته
+          # Configure Android plugins
           cache = Path.home() / ".pub-cache/hosted/pub.dev"
 
           packages = [
@@ -140,69 +132,82 @@ jobs:
           print("All compileSdk configurations updated.")
           PY
 
-      # 9. کنترل نهایی تنظیمات
       - name: Verify SDK configuration
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          files = [
+          def verify(file_path):
+              path = Path(file_path)
+
+              if not path.exists():
+                  raise RuntimeError(f"File missing: {path}")
+
+              content = path.read_text()
+
+              if path.name.endswith(".gradle.kts"):
+                  pattern = r'(?m)^\s*compileSdk\s*=\s*36\s*$'
+              else:
+                  pattern = r'(?m)^\s*compileSdkVersion\s+36\s*$'
+
+              if not re.search(pattern, content):
+                  raise RuntimeError(
+                      f"compileSdk 36 verification failed: {path}"
+                  )
+
+              print(f"Verified: {path}")
+
+          # Verify application
+          app_files = [
               Path("android/app/build.gradle.kts"),
               Path("android/app/build.gradle")
           ]
 
-          app_file = next((p for p in files if p.exists()), None)
+          app_file = next(
+              (p for p in app_files if p.exists()),
+              None
+          )
 
           if app_file is None:
-              raise SystemExit("App Gradle file missing")
+              raise RuntimeError("App Gradle file missing")
 
-          app_text = app_file.read_text()
+          verify(app_file)
 
-          if not re.search(
-              r'(?m)^\s*compileSdk(?:Version)?\s*(?:=\s*)?36\s*$',
-              app_text
-          ):
-              raise SystemExit("App compileSdk is not 36")
-
+          # Verify plugins
           cache = Path.home() / ".pub-cache/hosted/pub.dev"
 
           for package in [
               "file_picker",
               "flutter_plugin_android_lifecycle"
           ]:
-              candidates = list(
+              candidates = []
+
+              candidates.extend(
                   cache.glob(package + "-*/android/build.gradle")
               )
-              candidates += list(
+
+              candidates.extend(
                   cache.glob(package + "-*/android/build.gradle.kts")
               )
 
-              for file in candidates:
-                  content = file.read_text()
+              if not candidates:
+                  raise RuntimeError(
+                      f"Plugin Gradle file missing: {package}"
+                  )
 
-                  if not re.search(
-                      r'(?m)^\s*compileSdk(?:Version)?\s*(?:=\s*)?36\s*$',
-                      content
-                  ):
-                      raise SystemExit(
-                          f"compileSdk 36 verification failed: {file}"
-                      )
-
-                  print(f"Verified: {file}")
+              for candidate in candidates:
+                  verify(candidate)
 
           print("SDK 36 verification successful.")
           PY
 
-      # 10. بررسی کد
       - name: Analyze Flutter project
         run: flutter analyze
 
-      # 11. ساخت APK
       - name: Build release APK
         run: flutter build apk --release
 
-      # 12. ذخیره APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
