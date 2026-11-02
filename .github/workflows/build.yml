@@ -15,138 +15,194 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. دریافت مخزن
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. استخراج سورس اصلی
       - name: Extract project ZIP
         run: |
           unzip -o SmartAIStudio_GitHub.zip -d .
           test -f pubspec.yaml
           test -f lib/main.dart
-          echo "Project extracted successfully"
 
+      # 3. نصب Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # 4. نصب Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+      # 5. ایجاد پروژه Android جدید
       - name: Generate Android platform
         run: |
           flutter create --platforms=android \
             --org ir.smartai \
             --project-name smart_ai_studio .
 
+      # 6. حذف تست پیش‌فرض
       - name: Remove default test
         run: rm -f test/widget_test.dart
 
+      # 7. دریافت وابستگی‌ها
       - name: Get dependencies
         run: flutter pub get
 
-      # Set the main Android app to API 36
-      - name: Configure app compile SDK
+      # 8. تنظیم صحیح compileSdk برای هر دو قالب Gradle
+      - name: Configure Android SDK 36
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def set_compile_sdk(file_path):
+              path = Path(file_path)
+
+              if not path.exists():
+                  return False
+
+              content = path.read_text()
+              indent = "    "
+
+              if path.name.endswith(".gradle.kts"):
+                  pattern = r'(?m)^(\s*)compileSdk\s*(?:=.*)?$'
+                  replacement = r'\g<1>compileSdk = 36'
+              else:
+                  pattern = r'(?m)^(\s*)compileSdk(?:Version)?\s*(?:=.*)?$'
+                  replacement = r'\g<1>compileSdkVersion 36'
+
+              updated, count = re.subn(
+                  pattern,
+                  replacement,
+                  content
+              )
+
+              if count == 0:
+                  raise RuntimeError(
+                      f"compileSdk declaration not found in {path}"
+                  )
+
+              path.write_text(updated)
+              print(f"Updated: {path}")
+              return True
+
+          # برنامه اصلی
+          app_files = [
+              Path("android/app/build.gradle.kts"),
+              Path("android/app/build.gradle")
+          ]
+
+          app_found = False
+
+          for file_path in app_files:
+              if file_path.exists():
+                  set_compile_sdk(file_path)
+                  app_found = True
+                  break
+
+          if not app_found:
+              raise RuntimeError("Android app Gradle file not found")
+
+          # افزونه‌های وابسته
+          cache = Path.home() / ".pub-cache/hosted/pub.dev"
+
+          packages = [
+              "file_picker",
+              "flutter_plugin_android_lifecycle"
+          ]
+
+          for package in packages:
+              gradle_files = []
+
+              gradle_files.extend(
+                  cache.glob(package + "-*/android/build.gradle")
+              )
+
+              gradle_files.extend(
+                  cache.glob(package + "-*/android/build.gradle.kts")
+              )
+
+              if not gradle_files:
+                  raise RuntimeError(
+                      f"Gradle file not found for {package}"
+                  )
+
+              for gradle_file in gradle_files:
+                  set_compile_sdk(gradle_file)
+
+          print("All compileSdk configurations updated.")
+          PY
+
+      # 9. کنترل نهایی تنظیمات
+      - name: Verify SDK configuration
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           files = [
-              Path("android/app/build.gradle"),
-              Path("android/app/build.gradle.kts")
+              Path("android/app/build.gradle.kts"),
+              Path("android/app/build.gradle")
           ]
 
-          for f in files:
-              if not f.exists():
-                  continue
+          app_file = next((p for p in files if p.exists()), None)
 
-              s = f.read_text()
+          if app_file is None:
+              raise SystemExit("App Gradle file missing")
 
-              s = re.sub(
-                  r'(?m)^(\s*compileSdkVersion\s+).+$',
-                  r'\g<1>36',
-                  s
-              )
+          app_text = app_file.read_text()
 
-              s = re.sub(
-                  r'(?m)^(\s*compileSdk\s*=\s*).+$',
-                  r'\g<1>36',
-                  s
-              )
-
-              s = re.sub(
-                  r'(?m)^(\s*compileSdk\s+).+$',
-                  r'\g<1>36',
-                  s
-              )
-
-              f.write_text(s)
-              print("Updated app:", f)
-
-          PY
-
-      # Fix file_picker Android library itself
-      - name: Fix file_picker compile SDK
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          if not re.search(
+              r'(?m)^\s*compileSdk(?:Version)?\s*(?:=\s*)?36\s*$',
+              app_text
+          ):
+              raise SystemExit("App compileSdk is not 36")
 
           cache = Path.home() / ".pub-cache/hosted/pub.dev"
 
-          matches = list(cache.glob("file_picker-*/android/build.gradle"))
-          matches += list(cache.glob("file_picker-*/android/build.gradle.kts"))
-
-          if not matches:
-              raise SystemExit("ERROR: file_picker Gradle file not found")
-
-          for f in matches:
-              s = f.read_text()
-
-              # Groovy: compileSdk flutter.compileSdkVersion
-              # Kotlin: compileSdk = flutter.compileSdkVersion
-              s = re.sub(
-                  r'(?m)^(\s*compileSdk(?:Version)?\s*(?:=\s*)?).+$',
-                  lambda m: m.group(1) + "36",
-                  s
+          for package in [
+              "file_picker",
+              "flutter_plugin_android_lifecycle"
+          ]:
+              candidates = list(
+                  cache.glob(package + "-*/android/build.gradle")
+              )
+              candidates += list(
+                  cache.glob(package + "-*/android/build.gradle.kts")
               )
 
-              f.write_text(s)
+              for file in candidates:
+                  content = file.read_text()
 
-              print("Updated:", f)
-              for line in s.splitlines():
-                  if "compileSdk" in line:
-                      print("   ", line.strip())
+                  if not re.search(
+                      r'(?m)^\s*compileSdk(?:Version)?\s*(?:=\s*)?36\s*$',
+                      content
+                  ):
+                      raise SystemExit(
+                          f"compileSdk 36 verification failed: {file}"
+                      )
 
+                  print(f"Verified: {file}")
+
+          print("SDK 36 verification successful.")
           PY
 
-      # Verify that file_picker is no longer using API 34
-      - name: Verify compile SDK
-        run: |
-          echo "---- APP ----"
-          grep -nE 'compileSdk|compileSdkVersion' android/app/build.gradle* || true
-
-          echo "---- FILE PICKER ----"
-          grep -nE 'compileSdk|compileSdkVersion' \
-            "$HOME"/.pub-cache/hosted/pub.dev/file_picker-*/android/build.gradle* || true
-
-          if grep -RniE 'compileSdk.*34|compileSdkVersion 34' \
-            "$HOME"/.pub-cache/hosted/pub.dev/file_picker-*/android/; then
-            echo "ERROR: file_picker still uses API 34"
-            exit 1
-          fi
-
-      - name: Analyze
+      # 10. بررسی کد
+      - name: Analyze Flutter project
         run: flutter analyze
 
-      - name: Build APK
+      # 11. ساخت APK
+      - name: Build release APK
         run: flutter build apk --release
 
+      # 12. ذخیره APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
