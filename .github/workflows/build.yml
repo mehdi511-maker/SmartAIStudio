@@ -15,11 +15,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. دریافت مخزن
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. استخراج پروژه
       - name: Extract project ZIP
         run: |
           unzip -o SmartAIStudio_GitHub.zip -d .
@@ -27,107 +25,128 @@ jobs:
           test -f lib/main.dart
           echo "Project extracted successfully"
 
-      # 3. نصب Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 4. نصب Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # 5. ساخت پوشه Android جدید
       - name: Generate Android platform
         run: |
           flutter create --platforms=android \
             --org ir.smartai \
             --project-name smart_ai_studio .
 
-      # 6. حذف تست پیش‌فرض Flutter
       - name: Remove default test
         run: rm -f test/widget_test.dart
 
-      # 7. دریافت کتابخانه‌ها
       - name: Get dependencies
         run: flutter pub get
 
-      # 8. اصلاح compileSdk برنامه و افزونه‌ها
-      - name: Fix Android compile SDK
+      # Set the main Android app to API 36
+      - name: Configure app compile SDK
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          # تنظیم برنامه اصلی
-          for f in [
+          files = [
               Path("android/app/build.gradle"),
               Path("android/app/build.gradle.kts")
-          ]:
-              if f.exists():
-                  s = f.read_text()
-                  s = re.sub(
-                      r'(?m)^(\s*compileSdkVersion\s+).+$',
-                      r'\g<1>36',
-                      s
-                  )
-                  s = re.sub(
-                      r'(?m)^(\s*compileSdk\s*=\s*).+$',
-                      r'\g<1>36',
-                      s
-                  )
-                  f.write_text(s)
-                  print("Updated app:", f)
-
-          # تنظیم افزونه‌های نیازمند API 36
-          cache = Path.home() / ".pub-cache/hosted/pub.dev"
-
-          packages = [
-              "file_picker",
-              "flutter_plugin_android_lifecycle"
           ]
 
-          for package in packages:
-              for f in cache.glob(package + "-*/android/build.gradle*"):
-                  s = f.read_text()
+          for f in files:
+              if not f.exists():
+                  continue
 
-                  s = re.sub(
-                      r'(?m)^(\s*compileSdkVersion\s+).+$',
-                      r'\g<1>36',
-                      s
-                  )
+              s = f.read_text()
 
-                  s = re.sub(
-                      r'(?m)^(\s*compileSdk\s*=\s*).+$',
-                      r'\g<1>36',
-                      s
-                  )
+              s = re.sub(
+                  r'(?m)^(\s*compileSdkVersion\s+).+$',
+                  r'\g<1>36',
+                  s
+              )
 
-                  f.write_text(s)
-                  print("Updated plugin:", f)
+              s = re.sub(
+                  r'(?m)^(\s*compileSdk\s*=\s*).+$',
+                  r'\g<1>36',
+                  s
+              )
+
+              s = re.sub(
+                  r'(?m)^(\s*compileSdk\s+).+$',
+                  r'\g<1>36',
+                  s
+              )
+
+              f.write_text(s)
+              print("Updated app:", f)
+
           PY
 
-      # 9. بررسی تنظیمات SDK
-      - name: Verify SDK configuration
+      # Fix file_picker Android library itself
+      - name: Fix file_picker compile SDK
         run: |
-          grep -RniE 'compileSdk|compileSdkVersion' android
-          grep -RniE 'compileSdk|compileSdkVersion' \
-            "$HOME/.pub-cache/hosted/pub.dev/file_picker-"*"/android" \
-            "$HOME/.pub-cache/hosted/pub.dev/flutter_plugin_android_lifecycle-"*"/android" || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-      # 10. بررسی کد
+          cache = Path.home() / ".pub-cache/hosted/pub.dev"
+
+          matches = list(cache.glob("file_picker-*/android/build.gradle"))
+          matches += list(cache.glob("file_picker-*/android/build.gradle.kts"))
+
+          if not matches:
+              raise SystemExit("ERROR: file_picker Gradle file not found")
+
+          for f in matches:
+              s = f.read_text()
+
+              # Groovy: compileSdk flutter.compileSdkVersion
+              # Kotlin: compileSdk = flutter.compileSdkVersion
+              s = re.sub(
+                  r'(?m)^(\s*compileSdk(?:Version)?\s*(?:=\s*)?).+$',
+                  lambda m: m.group(1) + "36",
+                  s
+              )
+
+              f.write_text(s)
+
+              print("Updated:", f)
+              for line in s.splitlines():
+                  if "compileSdk" in line:
+                      print("   ", line.strip())
+
+          PY
+
+      # Verify that file_picker is no longer using API 34
+      - name: Verify compile SDK
+        run: |
+          echo "---- APP ----"
+          grep -nE 'compileSdk|compileSdkVersion' android/app/build.gradle* || true
+
+          echo "---- FILE PICKER ----"
+          grep -nE 'compileSdk|compileSdkVersion' \
+            "$HOME"/.pub-cache/hosted/pub.dev/file_picker-*/android/build.gradle* || true
+
+          if grep -RniE 'compileSdk.*34|compileSdkVersion 34' \
+            "$HOME"/.pub-cache/hosted/pub.dev/file_picker-*/android/; then
+            echo "ERROR: file_picker still uses API 34"
+            exit 1
+          fi
+
       - name: Analyze
         run: flutter analyze
 
-      # 11. ساخت APK
-      - name: Build release APK
+      - name: Build APK
         run: flutter build apk --release
 
-      # 12. دریافت خروجی
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
